@@ -54,32 +54,41 @@ echo -e "${GREEN}Cluster is up and accessible.${NC}"
 # Install Cilium CNI
 ########################################
 echo -e "${CYAN}Installing Cilium CNI...${NC}"
-helm repo add cilium https://helm.cilium.io/ && echo -e "${GREEN}Cilium repo added.${NC}"
-helm repo update && echo -e "${GREEN}Helm repos updated.${NC}"
-
-helm upgrade --install cilium cilium/cilium --version 1.14.2 \
-  --namespace kube-system \
-  --set kubeProxyReplacement=strict \
-  --set k8sServiceHost=istio-control-plane \
-  --set k8sServicePort=6443 \
-  --set ipam.mode=kubernetes \
-  --set nodePort.enabled=true \
-  --set externalIPs.enabled=true \
-  --set hostServices.enabled=true \
-  --set hostPort.enabled=true \
-  --set image.pullPolicy=IfNotPresent \
-  --set ipam.mode=kubernetes \
-  --set tunnel=geneve \
-  --set bpf.masquerade=true \
-  --set ipv4.enabled=true \
-  --set ipv6.enabled=false \
-  --set hubble.enabled=true \
-  --set hubble.relay.enabled=true \
-  --set hubble.ui.enabled=true
+cilium install
+cilium status --wait
+cilium hubble enable --ui
+cilium status
+#cilium connectivity test --request-timeout 30s --connect-timeout 10s
+#helm repo add cilium https://helm.cilium.io/ && echo -e "${GREEN}Cilium repo added.${NC}"
+#helm repo update && echo -e "${GREEN}Helm repos updated.${NC}"
+#helm upgrade --install cilium cilium/cilium --version 1.14.6 \
+#  --namespace kube-system \
+#  --set kubeProxyReplacement=partial \
+#  --set ipam.mode=kubernetes \
+#  --set tunnel=disabled \
+#  --set autoDirectNodeRoutes=true \
+#  --set bpf.masquerade=false \
+#  --set identityAllocationMode=crd \
+#  --set policyEnforcement=default \
+#  --set hubble.enabled=true \
+#  --set hubble.relay.enabled=true \
+#  --set hubble.ui.enabled=true
 
 echo -e "${YELLOW}Waiting for Cilium to be ready...${NC}"
 kubectl rollout status -n kube-system daemonset/cilium
 echo -e "${GREEN}Cilium CNI installation completed successfully.${NC}"
+
+
+########################################
+# Install Calico CNI
+########################################
+#echo -e "${CYAN}Installing Calico CNI...${NC}"
+#kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+#echo -e "${YELLOW}Waiting for Calico to be ready...${NC}"
+#kubectl rollout status -n kube-system daemonset/calico-node
+#echo -e "${GREEN}Calico CNI installation completed successfully.${NC}"
+
+
 
 ########################################
 # Install MetalLB
