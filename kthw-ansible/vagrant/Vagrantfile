@@ -1,0 +1,113 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+require 'yaml'
+
+# Load cluster config from the repo root
+cfg = YAML.load_file(File.join(__dir__, '..', 'config', 'cluster.yml'))
+
+# ── Architecture detection ────────────────────────────────────────────────────
+# Detect host architecture; override with config if not 'auto'.
+HOST_UNAME = `uname -m`.strip
+HOST_IS_ARM = %w[aarch64 arm64].include?(HOST_UNAME)
+
+cfg_arch = cfg.dig('arch') || 'auto'
+IS_ARM = cfg_arch == 'auto' ? HOST_IS_ARM : (cfg_arch == 'arm64')
+
+# Box selection:
+#   AMD64: bento/ubuntu-24.04
+#   ARM64: bento/ubuntu-24.04-arm64
+# NOTE: VirtualBox on ARM Linux is not officially supported.
+#       On ARM hosts use KVM (provider: kvm in cluster.yml).
+#       On Apple Silicon (macOS) VirtualBox 7.1+ works with ARM64 boxes.
+DEFAULT_BOX = IS_ARM ? 'bento/ubuntu-24.04-arm64' : 'bento/ubuntu-24.04'
+
+SUBNET          = cfg['network']['subnet']
+LB_IP           = "#{SUBNET}.#{cfg['network']['lb_last_octet']}"
+MASTERS_START   = cfg['network']['masters_first_octet']
+WORKERS_START   = cfg['network']['workers_first_octet']
+MASTER_COUNT    = cfg['nodes']['masters']['count']
+WORKER_COUNT    = cfg['nodes']['workers']['count']
+MASTER_CPUS     = cfg['nodes']['masters']['cpus']
+MASTER_MEM      = cfg['nodes']['masters']['memory']
+WORKER_CPUS     = cfg['nodes']['workers']['cpus']
+WORKER_MEM      = cfg['nodes']['workers']['memory']
+LB_CPUS         = cfg['nodes']['loadbalancer']['cpus']
+LB_MEM          = cfg['nodes']['loadbalancer']['memory']
+SSH_PUB_KEY     = File.expand_path(cfg['ssh']['public_key'])
+
+# Build node list for /etc/hosts injection
+ALL_NODES = [{ name: 'lb', ip: LB_IP }]
+MASTER_COUNT.times { |i| ALL_NODES << { name: "master-#{i+1}", ip: "#{SUBNET}.#{MASTERS_START + i}" } }
+WORKER_COUNT.times { |i| ALL_NODES << { name: "worker-#{i+1}", ip: "#{SUBNET}.#{WORKERS_START + i}" } }
+
+HOSTS_SNIPPET = ALL_NODES.map { |n| "#{n[:ip]} #{n[:name]}" }.join("\n")
+
+Vagrant.configure("2") do |config|
+  config.vm.box = DEFAULT_BOX
+  config.vm.box_check_update = false
+
+  # Inject SSH public key into every VM so Ansible can connect
+  pub_key = File.exist?(SSH_PUB_KEY) ? File.read(SSH_PUB_KEY).strip : ""
+
+  common_script = <<~SHELL
+    set -e
+    # SSH key
+    mkdir -p /home/ubuntu/.ssh
+    echo "#{pub_key}" >> /home/ubuntu/.ssh/authorized_keys
+    chmod 700 /home/ubuntu/.ssh
+    chmod 600 /home/ubuntu/.ssh/authorized_keys
+    chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+    # /etc/hosts
+    grep -qF 'lb' /etc/hosts || cat >> /etc/hosts <<'HOSTS'
+#{HOSTS_SNIPPET}
+HOSTS
+    # Python (required by Ansible)
+    apt-get update -qq && apt-get install -y -qq python3 python3-apt
+  SHELL
+
+  # ── Load balancer ────────────────────────────────────────────────────────────
+  config.vm.define "lb" do |lb|
+    lb.vm.hostname = "lb"
+    lb.vm.network "private_network", ip: LB_IP
+    lb.vm.provider "virtualbox" do |vb|
+      vb.name   = "k8s-lb"
+      vb.cpus   = LB_CPUS
+      vb.memory = LB_MEM
+    end
+    lb.vm.provision "shell", inline: common_script
+  end
+
+  # ── Masters ──────────────────────────────────────────────────────────────────
+  MASTER_COUNT.times do |i|
+    idx  = i + 1
+    ip   = "#{SUBNET}.#{MASTERS_START + i}"
+    name = "master-#{idx}"
+    config.vm.define name do |m|
+      m.vm.hostname = name
+      m.vm.network "private_network", ip: ip
+      m.vm.provider "virtualbox" do |vb|
+        vb.name   = "k8s-#{name}"
+        vb.cpus   = MASTER_CPUS
+        vb.memory = MASTER_MEM
+      end
+      m.vm.provision "shell", inline: common_script
+    end
+  end
+
+  # ── Workers ──────────────────────────────────────────────────────────────────
+  WORKER_COUNT.times do |i|
+    idx  = i + 1
+    ip   = "#{SUBNET}.#{WORKERS_START + i}"
+    name = "worker-#{idx}"
+    config.vm.define name do |w|
+      w.vm.hostname = name
+      w.vm.network "private_network", ip: ip
+      w.vm.provider "virtualbox" do |vb|
+        vb.name   = "k8s-#{name}"
+        vb.cpus   = WORKER_CPUS
+        vb.memory = WORKER_MEM
+      end
+      w.vm.provision "shell", inline: common_script
+    end
+  end
+end

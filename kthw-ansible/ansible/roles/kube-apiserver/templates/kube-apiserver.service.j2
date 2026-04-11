@@ -1,0 +1,46 @@
+[Unit]
+Description=Kubernetes API Server
+Documentation=https://github.com/kubernetes/kubernetes
+
+[Service]
+ExecStart={{ bin_dir }}/kube-apiserver \
+  --advertise-address={{ node_ip }} \
+  --allow-privileged=true \
+  --apiserver-count={{ master_ips | length }} \
+  --audit-log-maxage=30 \
+  --audit-log-maxbackup=3 \
+  --audit-log-maxsize=100 \
+  --audit-log-path=/var/log/audit.log \
+  --authorization-mode=Node,RBAC \
+  --bind-address=0.0.0.0 \
+  --enable-admission-plugins=NodeRestriction,ServiceAccount \
+  --enable-bootstrap-token-auth \
+  --etcd-cafile={{ etcd_dir }}/etcd-ca.crt \
+  --etcd-certfile={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.crt \
+  --etcd-keyfile={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.key \
+  --etcd-servers={{ etcd_servers }} \
+  --event-ttl=1h \
+  --encryption-provider-config={{ k8s_dir }}/encryption-config.yaml \
+  --kubelet-certificate-authority={{ k8s_dir }}/ca.crt \
+  --kubelet-client-certificate={{ k8s_dir }}/kube-apiserver.crt \
+  --kubelet-client-key={{ k8s_dir }}/kube-apiserver.key \
+  --runtime-config=api/all=true \
+  --service-account-issuer=https://{{ first_master_ip }}:6443 \
+  --service-account-signing-key-file={{ k8s_dir }}/service-account.key \
+  --service-account-key-file={{ k8s_dir }}/service-account.crt \
+  --service-cluster-ip-range={{ service_cidr }} \
+  --service-node-port-range=30000-32767 \
+  --client-ca-file={{ k8s_dir }}/ca.crt \
+  --tls-cert-file={{ k8s_dir }}/kube-apiserver.crt \
+  --tls-private-key-file={{ k8s_dir }}/kube-apiserver.key \
+  --requestheader-allowed-names=front-proxy-client \
+  --requestheader-client-ca-file={{ k8s_dir }}/front-proxy-ca.crt \
+  --requestheader-extra-headers-prefix=X-Remote-Extra- \
+  --requestheader-group-headers=X-Remote-Group \
+  --requestheader-username-headers=X-Remote-User \
+  --v=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

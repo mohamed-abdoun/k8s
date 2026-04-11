@@ -1,0 +1,26 @@
+---
+# haproxy/tasks/main.yml
+# Runs on: lb
+
+- name: Install haproxy
+  ansible.builtin.apt:
+    name: haproxy
+    state: present
+    update_cache: true
+  become: true
+
+- name: Deploy haproxy config
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: "0644"
+    backup: true
+  become: true
+  notify: Restart haproxy
+
+- name: Enable and start haproxy
+  ansible.builtin.systemd:
+    name: haproxy
+    state: started
+    enabled: true
+  become: true

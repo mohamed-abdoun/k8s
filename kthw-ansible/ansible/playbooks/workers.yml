@@ -1,0 +1,9 @@
+---
+# workers.yml – (Re)deploy worker nodes only
+# Usage: ansible-playbook playbooks/workers.yml
+
+- name: Set up worker nodes
+  hosts: workers
+  gather_facts: false
+  roles:
+    - kubelet

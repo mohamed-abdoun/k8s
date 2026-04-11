@@ -1,0 +1,26 @@
+---
+# kube-scheduler/tasks/main.yml
+# Runs on: masters
+
+- name: Download kube-scheduler binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ goarch }}/kube-scheduler"
+    dest: "{{ bin_dir }}/kube-scheduler"
+    mode: "0755"
+  become: true
+
+- name: Deploy kube-scheduler systemd service
+  ansible.builtin.template:
+    src: kube-scheduler.service.j2
+    dest: "{{ systemd_dir }}/kube-scheduler.service"
+    mode: "0644"
+  become: true
+  notify: Reload and restart kube-scheduler
+
+- name: Enable and start kube-scheduler
+  ansible.builtin.systemd:
+    name: kube-scheduler
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

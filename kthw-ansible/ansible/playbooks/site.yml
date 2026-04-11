@@ -1,0 +1,60 @@
+---
+# site.yml – Full cluster deployment (run from the ansible/ directory)
+# Usage: ansible-playbook playbooks/site.yml
+
+- name: Apply common configuration to all nodes
+  hosts: all
+  gather_facts: true
+  roles:
+    - common
+
+- name: Generate and distribute PKI certificates
+  hosts: all           # PKI role delegates all tasks to localhost; targets all so
+  gather_facts: true  # distribution loops iterate over the correct inventory groups.
+  roles:
+    - pki
+
+- name: Set up etcd cluster
+  hosts: etcd
+  gather_facts: true  # 'smart' uses the fact cache populated by the common play
+  roles:
+    - etcd
+
+- name: Set up HAProxy load balancer
+  hosts: lb
+  gather_facts: true
+  roles:
+    - haproxy
+
+- name: Set up Kubernetes control plane
+  hosts: masters
+  gather_facts: true
+  serial: 1            # bring up masters one at a time for safe leader election
+  roles:
+    - kube-apiserver
+    - kube-scheduler
+    - kube-controller-manager
+
+- name: Set up worker nodes
+  hosts: workers
+  gather_facts: true
+  roles:
+    - kubelet
+
+- name: Set up kubelet on master nodes
+  hosts: masters
+  gather_facts: true
+  roles:
+    - kubelet
+
+- name: Install Cilium CNI
+  hosts: masters[0]
+  gather_facts: true
+  roles:
+    - cilium
+
+- name: Install CoreDNS
+  hosts: masters[0]
+  gather_facts: true
+  roles:
+    - coredns

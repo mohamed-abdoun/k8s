@@ -1,0 +1,35 @@
+---
+# coredns/tasks/main.yml
+# Runs on: first_master (kubectl operations delegated)
+
+- name: Render CoreDNS manifest
+  ansible.builtin.template:
+    src: coredns.yaml.j2
+    dest: /tmp/coredns.yaml
+    mode: "0644"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+
+- name: Apply CoreDNS manifest
+  ansible.builtin.command:
+    cmd: "{{ bin_dir }}/kubectl apply -f /tmp/coredns.yaml --kubeconfig {{ k8s_dir }}/admin.kubeconfig"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  changed_when: true
+
+- name: Wait for CoreDNS pods to be ready
+  ansible.builtin.command:
+    cmd: >
+      {{ bin_dir }}/kubectl rollout status deployment/coredns
+      -n kube-system
+      --timeout=120s
+      --kubeconfig {{ k8s_dir }}/admin.kubeconfig
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  register: coredns_rollout
+  retries: 5
+  delay: 20
+  until: coredns_rollout.rc == 0
+  changed_when: false

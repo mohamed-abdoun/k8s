@@ -1,0 +1,62 @@
+---
+# etcd/tasks/main.yml
+# Runs on: masters (etcd group)
+
+- name: Build etcd --initial-cluster string
+  ansible.builtin.set_fact:
+    etcd_initial_cluster: >-
+      {%- set parts = [] -%}
+      {%- for ip in master_ips -%}
+      {%- set _ = parts.append('master-' ~ loop.index ~ '=https://' ~ ip ~ ':2380') -%}
+      {%- endfor -%}
+      {{ parts | join(',') }}
+  run_once: true
+
+- name: Create /var/lib/etcd
+  ansible.builtin.file:
+    path: /var/lib/etcd
+    state: directory
+    mode: "0700"
+  become: true
+
+- name: Download etcd archive
+  ansible.builtin.get_url:
+    url: "https://github.com/etcd-io/etcd/releases/download/{{ etcd_version }}/etcd-{{ etcd_version }}-linux-{{ goarch }}.tar.gz"
+    dest: "/tmp/etcd-{{ etcd_version }}-linux-{{ goarch }}.tar.gz"
+    mode: "0644"
+
+- name: Extract etcd binaries
+  ansible.builtin.unarchive:
+    src: "/tmp/etcd-{{ etcd_version }}-linux-{{ goarch }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/etcd-{{ etcd_version }}-linux-{{ goarch }}/etcd"
+
+- name: Install etcd binaries
+  ansible.builtin.copy:
+    src: "/tmp/etcd-{{ etcd_version }}-linux-{{ goarch }}/{{ item }}"
+    dest: "/usr/bin/{{ item }}"
+    mode: "0755"
+    remote_src: true
+  loop:
+    - etcd
+    - etcdctl
+  become: true
+
+- name: Deploy etcd systemd service
+  ansible.builtin.template:
+    src: etcd.service.j2
+    dest: /etc/systemd/system/etcd.service
+    mode: "0644"
+  vars:
+    etcd_initial_cluster: "{{ etcd_initial_cluster }}"
+  become: true
+  notify: Reload and restart etcd
+
+- name: Enable and start etcd
+  ansible.builtin.systemd:
+    name: etcd
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

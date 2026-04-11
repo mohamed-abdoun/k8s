@@ -1,0 +1,100 @@
+---
+# cilium/tasks/main.yml
+# Runs on: first_master (delegated for kubectl operations)
+
+- name: Approve pending CSRs before installing Cilium
+  ansible.builtin.shell:
+    cmd: >
+      {{ bin_dir }}/kubectl get csr -o name
+      --kubeconfig {{ k8s_dir }}/admin.kubeconfig
+      | xargs -r {{ bin_dir }}/kubectl certificate approve
+      --kubeconfig {{ k8s_dir }}/admin.kubeconfig
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  register: csr_approve
+  changed_when: csr_approve.stdout != ''
+  ignore_errors: true
+
+- name: Check if cilium CLI is installed
+  ansible.builtin.stat:
+    path: "{{ bin_dir }}/cilium"
+  register: cilium_bin
+  run_once: true
+  delegate_to: "{{ first_master }}"
+
+- name: Download cilium CLI
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+      # Detect arch on the remote VM (aarch64 → arm64, x86_64 → amd64)
+      ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+      curl -L --fail --remote-name-all \
+        "https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz"
+      tar xzvf "cilium-linux-${ARCH}.tar.gz" -C {{ bin_dir }}/
+      rm -f "cilium-linux-${ARCH}.tar.gz"
+    chdir: /tmp
+    creates: "{{ bin_dir }}/cilium"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  when: not cilium_bin.stat.exists
+
+- name: Set up admin kubeconfig for root
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: "0700"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+
+- name: Link admin kubeconfig to /root/.kube/config
+  ansible.builtin.copy:
+    src: "{{ k8s_dir }}/admin.kubeconfig"
+    dest: /root/.kube/config
+    mode: "0600"
+    remote_src: true
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+
+- name: Check if Cilium is already installed
+  ansible.builtin.command:
+    cmd: "{{ bin_dir }}/kubectl get daemonset cilium -n kube-system --kubeconfig {{ k8s_dir }}/admin.kubeconfig"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  register: cilium_status
+  failed_when: false
+  changed_when: false
+
+- name: Install Cilium
+  ansible.builtin.command:
+    cmd: >
+      {{ bin_dir }}/cilium install
+      --version {{ cilium_version }}
+      --set kubeProxyReplacement=true
+      --set ipam.operator.clusterPoolIPv4PodCIDRList="{{ '{' }}{{ pod_cidr }}{{ '}' }}"
+      --set hubble.enabled=false
+      --set hubble.relay.enabled=false
+      --set hubble.ui.enabled=false
+      --kubeconfig {{ k8s_dir }}/admin.kubeconfig
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  when: cilium_status.rc != 0
+  changed_when: true
+
+- name: Wait for Cilium to be ready
+  ansible.builtin.command:
+    cmd: "{{ bin_dir }}/cilium status --wait --kubeconfig {{ k8s_dir }}/admin.kubeconfig"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  register: cilium_wait
+  retries: 10
+  delay: 30
+  until: cilium_wait.rc == 0
+  changed_when: false

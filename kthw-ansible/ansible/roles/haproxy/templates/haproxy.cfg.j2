@@ -1,0 +1,24 @@
+global
+    log /dev/log local0
+    maxconn 2000
+    daemon
+
+defaults
+    log     global
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+
+frontend kubernetes
+    bind {{ lb_ip }}:6443
+    option tcplog
+    mode tcp
+    default_backend kubernetes-master-nodes
+
+backend kubernetes-master-nodes
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for ip in master_ips %}
+    server master-{{ loop.index }} {{ ip }}:6443 check fall 3 rise 2
+{% endfor %}

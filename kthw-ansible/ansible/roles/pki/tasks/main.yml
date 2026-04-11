@@ -1,0 +1,476 @@
+---
+# pki/tasks/main.yml
+# Runs on localhost. Generates all CAs, leaf certs, and kubeconfigs,
+# then distributes them to the appropriate nodes.
+# Idempotent: each openssl step uses 'creates:' so it is skipped if the
+# output file already exists.
+
+# ── Local PKI directory ───────────────────────────────────────────────────────
+- name: Create local PKI directory
+  ansible.builtin.file:
+    path: "{{ pki_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+# ── etcd CA ───────────────────────────────────────────────────────────────────
+- name: Generate etcd CA key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/etcd-ca.key" 4096
+    creates: "{{ pki_dir }}/etcd-ca.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate etcd CA certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new -nodes
+      -key "{{ pki_dir }}/etcd-ca.key"
+      -sha256 -days {{ cert_days }}
+      -subj "/CN=etcd-ca"
+      -addext "basicConstraints=critical,CA:TRUE"
+      -addext "keyUsage=critical,keyCertSign,cRLSign"
+      -addext "subjectKeyIdentifier=hash"
+      -addext "authorityKeyIdentifier=keyid:always,issuer"
+      -out "{{ pki_dir }}/etcd-ca.crt"
+    creates: "{{ pki_dir }}/etcd-ca.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── Kubernetes CA ─────────────────────────────────────────────────────────────
+- name: Generate Kubernetes CA key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/ca.key" 2048
+    creates: "{{ pki_dir }}/ca.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate Kubernetes CA certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new -nodes
+      -key "{{ pki_dir }}/ca.key"
+      -days {{ cert_days }}
+      -subj "/CN=KUBERNETES-CA"
+      -addext "basicConstraints=critical,CA:TRUE"
+      -addext "keyUsage=critical,keyCertSign,cRLSign"
+      -addext "subjectKeyIdentifier=hash"
+      -out "{{ pki_dir }}/ca.crt"
+    creates: "{{ pki_dir }}/ca.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── etcd server certs (one per master) ───────────────────────────────────────
+- name: Generate etcd OpenSSL configs for all masters
+  ansible.builtin.template:
+    src: etcd-server.cnf.j2
+    dest: "{{ pki_dir }}/etcd-master-{{ idx }}.cnf"
+    mode: "0600"
+  loop: "{{ master_ips }}"
+  loop_control:
+    index_var: _i
+  vars:
+    ip:        "{{ item }}"
+    idx:       "{{ _i + 1 }}"
+    node_name: "master-{{ _i + 1 }}"
+    node_ip:   "{{ item }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate etcd server key for each master
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/etcd-server{{ idx }}.key" 2048
+    creates: "{{ pki_dir }}/etcd-server{{ idx }}.key"
+  loop: "{{ master_ips }}"
+  loop_control:
+    index_var: _i
+  vars:
+    idx: "{{ _i + 1 }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate etcd server CSR for each master
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/etcd-server{{ idx }}.key"
+      -out "{{ pki_dir }}/etcd-server{{ idx }}.csr"
+      -config "{{ pki_dir }}/etcd-master-{{ idx }}.cnf"
+    creates: "{{ pki_dir }}/etcd-server{{ idx }}.csr"
+  loop: "{{ master_ips }}"
+  loop_control:
+    index_var: _i
+  vars:
+    idx: "{{ _i + 1 }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign etcd server cert for each master
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/etcd-server{{ idx }}.csr"
+      -CA "{{ pki_dir }}/etcd-ca.crt"
+      -CAkey "{{ pki_dir }}/etcd-ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/etcd-server{{ idx }}.crt"
+      -days {{ cert_days_leaf }}
+      -extensions v3_req
+      -extfile "{{ pki_dir }}/etcd-master-{{ idx }}.cnf"
+    creates: "{{ pki_dir }}/etcd-server{{ idx }}.crt"
+  loop: "{{ master_ips }}"
+  loop_control:
+    index_var: _i
+  vars:
+    idx: "{{ _i + 1 }}"
+  delegate_to: localhost
+  run_once: true
+
+# ── kube-apiserver cert ───────────────────────────────────────────────────────
+- name: Generate kube-apiserver OpenSSL config
+  ansible.builtin.template:
+    src: openssl-apiserver.cnf.j2
+    dest: "{{ pki_dir }}/openssl-apiserver.cnf"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-apiserver key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/kube-apiserver.key" 2048
+    creates: "{{ pki_dir }}/kube-apiserver.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-apiserver CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/kube-apiserver.key"
+      -subj "/CN=kube-apiserver"
+      -out "{{ pki_dir }}/kube-apiserver.csr"
+      -config "{{ pki_dir }}/openssl-apiserver.cnf"
+    creates: "{{ pki_dir }}/kube-apiserver.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign kube-apiserver cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/kube-apiserver.csr"
+      -CA "{{ pki_dir }}/ca.crt"
+      -CAkey "{{ pki_dir }}/ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/kube-apiserver.crt"
+      -extensions v3_req
+      -extfile "{{ pki_dir }}/openssl-apiserver.cnf"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/kube-apiserver.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── front-proxy CA ────────────────────────────────────────────────────────────
+- name: Generate front-proxy CA key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/front-proxy-ca.key" 2048
+    creates: "{{ pki_dir }}/front-proxy-ca.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate front-proxy CA cert
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -new -nodes
+      -key "{{ pki_dir }}/front-proxy-ca.key"
+      -subj "/CN=front-proxy-ca"
+      -days {{ cert_days }}
+      -out "{{ pki_dir }}/front-proxy-ca.crt"
+    creates: "{{ pki_dir }}/front-proxy-ca.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── admin cert ────────────────────────────────────────────────────────────────
+- name: Generate admin key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/admin.key" 2048
+    creates: "{{ pki_dir }}/admin.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate admin CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/admin.key"
+      -subj "/CN=admin/O=system:masters"
+      -out "{{ pki_dir }}/admin.csr"
+    creates: "{{ pki_dir }}/admin.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign admin cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/admin.csr"
+      -CA "{{ pki_dir }}/ca.crt"
+      -CAkey "{{ pki_dir }}/ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/admin.crt"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/admin.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── service-account cert ──────────────────────────────────────────────────────
+- name: Generate service-account key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/service-account.key" 2048
+    creates: "{{ pki_dir }}/service-account.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate service-account CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/service-account.key"
+      -subj "/CN=service-accounts"
+      -out "{{ pki_dir }}/service-account.csr"
+    creates: "{{ pki_dir }}/service-account.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign service-account cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/service-account.csr"
+      -CA "{{ pki_dir }}/ca.crt"
+      -CAkey "{{ pki_dir }}/ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/service-account.crt"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/service-account.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── kube-scheduler cert + kubeconfig ─────────────────────────────────────────
+- name: Generate kube-scheduler key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/kube-scheduler.key" 2048
+    creates: "{{ pki_dir }}/kube-scheduler.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-scheduler CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/kube-scheduler.key"
+      -subj "/CN=system:kube-scheduler"
+      -out "{{ pki_dir }}/kube-scheduler.csr"
+    creates: "{{ pki_dir }}/kube-scheduler.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign kube-scheduler cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/kube-scheduler.csr"
+      -CA "{{ pki_dir }}/ca.crt"
+      -CAkey "{{ pki_dir }}/ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/kube-scheduler.crt"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/kube-scheduler.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── kube-controller-manager cert + kubeconfig ─────────────────────────────────
+- name: Generate kube-controller-manager key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/kube-controller-manager.key" 2048
+    creates: "{{ pki_dir }}/kube-controller-manager.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-controller-manager CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/kube-controller-manager.key"
+      -subj "/CN=system:kube-controller-manager"
+      -out "{{ pki_dir }}/kube-controller-manager.csr"
+    creates: "{{ pki_dir }}/kube-controller-manager.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign kube-controller-manager cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/kube-controller-manager.csr"
+      -CA "{{ pki_dir }}/ca.crt"
+      -CAkey "{{ pki_dir }}/ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/kube-controller-manager.crt"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/kube-controller-manager.crt"
+  delegate_to: localhost
+  run_once: true
+
+# ── Kubeconfigs (built from raw certs – no local kubectl required) ─────────────
+- name: Read CA cert for embedding
+  ansible.builtin.slurp:
+    src: "{{ pki_dir }}/ca.crt"
+  register: ca_crt_raw
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate admin kubeconfig
+  ansible.builtin.template:
+    src: kubeconfig.j2
+    dest: "{{ pki_dir }}/admin.kubeconfig"
+    mode: "0600"
+  vars:
+    ca_crt_b64:     "{{ ca_crt_raw.content }}"
+    server:         "https://{{ lb_ip }}:6443"
+    kube_user:      admin
+    client_crt_b64: "{{ lookup('file', pki_dir + '/admin.crt') | b64encode }}"
+    client_key_b64: "{{ lookup('file', pki_dir + '/admin.key') | b64encode }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-scheduler kubeconfig
+  ansible.builtin.template:
+    src: kubeconfig.j2
+    dest: "{{ pki_dir }}/kube-scheduler.kubeconfig"
+    mode: "0600"
+  vars:
+    ca_crt_b64:     "{{ ca_crt_raw.content }}"
+    server:         "https://127.0.0.1:6443"
+    kube_user:      "system:kube-scheduler"
+    client_crt_b64: "{{ lookup('file', pki_dir + '/kube-scheduler.crt') | b64encode }}"
+    client_key_b64: "{{ lookup('file', pki_dir + '/kube-scheduler.key') | b64encode }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate kube-controller-manager kubeconfig
+  ansible.builtin.template:
+    src: kubeconfig.j2
+    dest: "{{ pki_dir }}/kube-controller-manager.kubeconfig"
+    mode: "0600"
+  vars:
+    ca_crt_b64:     "{{ ca_crt_raw.content }}"
+    server:         "https://127.0.0.1:6443"
+    kube_user:      "system:kube-controller-manager"
+    client_crt_b64: "{{ lookup('file', pki_dir + '/kube-controller-manager.crt') | b64encode }}"
+    client_key_b64: "{{ lookup('file', pki_dir + '/kube-controller-manager.key') | b64encode }}"
+  delegate_to: localhost
+  run_once: true
+
+# ── encryption-config.yaml ────────────────────────────────────────────────────
+- name: Generate encryption key
+  ansible.builtin.shell:
+    cmd: head -c 32 /dev/urandom | base64
+  register: enc_key
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Write encryption-config.yaml
+  ansible.builtin.copy:
+    dest: "{{ pki_dir }}/encryption-config.yaml"
+    mode: "0600"
+    force: false
+    content: |
+      kind: EncryptionConfig
+      apiVersion: v1
+      resources:
+        - resources:
+            - secrets
+          providers:
+            - aescbc:
+                keys:
+                  - name: key1
+                    secret: {{ enc_key.stdout }}
+            - identity: {}
+  delegate_to: localhost
+  run_once: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Distribution
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── etcd dirs on masters ──────────────────────────────────────────────────────
+- name: Ensure /etc/etcd exists on masters
+  ansible.builtin.file:
+    path: "{{ etcd_dir }}"
+    state: directory
+    mode: "0755"
+  when: inventory_hostname in groups['masters']
+  become: true
+
+# ── Copy etcd CA to all masters ───────────────────────────────────────────────
+- name: Copy etcd CA to masters
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/{{ item }}"
+    dest: "{{ etcd_dir }}/{{ item }}"
+    mode: "0640"
+  loop:
+    - etcd-ca.crt
+    - etcd-ca.key
+  when: inventory_hostname in groups['masters']
+  become: true
+
+# ── Copy per-master etcd server certs ────────────────────────────────────────
+- name: Copy etcd server cert to each master
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/etcd-server{{ node_index + 1 }}.{{ item }}"
+    dest: "{{ etcd_dir }}/etcd-server{{ node_index + 1 }}.{{ item }}"
+    mode: "0640"
+  loop:
+    - crt
+    - key
+  when: inventory_hostname in groups['masters']
+  become: true
+
+# ── Kubernetes CA + certs to masters ─────────────────────────────────────────
+- name: Copy k8s PKI files to masters
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/{{ item }}"
+    dest: "{{ k8s_dir }}/{{ item }}"
+    mode: "0640"
+  loop:
+    - ca.crt
+    - ca.key
+    - etcd-ca.crt
+    - kube-apiserver.crt
+    - kube-apiserver.key
+    - front-proxy-ca.crt
+    - front-proxy-ca.key
+    - service-account.crt
+    - service-account.key
+    - kube-scheduler.crt
+    - kube-scheduler.key
+    - kube-scheduler.kubeconfig
+    - kube-controller-manager.crt
+    - kube-controller-manager.key
+    - kube-controller-manager.kubeconfig
+    - admin.kubeconfig
+    - encryption-config.yaml
+  when: inventory_hostname in groups['masters']
+  become: true
+
+# ── Kubernetes CA cert to workers ─────────────────────────────────────────────
+- name: Copy k8s CA cert to workers
+  ansible.builtin.copy:
+    src: "{{ pki_dir }}/ca.crt"
+    dest: "{{ k8s_dir }}/ca.crt"
+    mode: "0644"
+  when: inventory_hostname in groups['workers']
+  become: true

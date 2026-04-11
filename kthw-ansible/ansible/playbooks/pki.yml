@@ -1,0 +1,9 @@
+---
+# pki.yml – Regenerate/distribute PKI only
+# Usage: ansible-playbook playbooks/pki.yml
+
+- name: Generate and distribute PKI certificates
+  hosts: all
+  gather_facts: false
+  roles:
+    - pki

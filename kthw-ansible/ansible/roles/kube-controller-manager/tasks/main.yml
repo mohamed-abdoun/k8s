@@ -1,0 +1,128 @@
+---
+# kube-controller-manager/tasks/main.yml
+# Runs on: masters
+
+- name: Download kube-controller-manager binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ goarch }}/kube-controller-manager"
+    dest: "{{ bin_dir }}/kube-controller-manager"
+    mode: "0755"
+  become: true
+
+- name: Deploy kube-controller-manager systemd service
+  ansible.builtin.template:
+    src: kube-controller-manager.service.j2
+    dest: "{{ systemd_dir }}/kube-controller-manager.service"
+    mode: "0644"
+  become: true
+  notify: Reload and restart kube-controller-manager
+
+- name: Enable and start kube-controller-manager
+  ansible.builtin.systemd:
+    name: kube-controller-manager
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+
+# ── Bootstrap token + RBAC (run once from first master) ───────────────────────
+- name: Wait for kube-apiserver to be ready
+  ansible.builtin.wait_for:
+    host: "{{ first_master_ip }}"
+    port: 6443
+    timeout: 120
+    delay: 5
+  run_once: true
+  delegate_to: localhost
+
+- name: Generate bootstrap token ID and secret
+  ansible.builtin.shell:
+    cmd: |
+      echo "$(openssl rand -hex 3).$(openssl rand -hex 8)"
+  register: bootstrap_token_raw
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  changed_when: false
+
+- name: Set bootstrap token facts
+  ansible.builtin.set_fact:
+    bootstrap_token_id:     "{{ bootstrap_token_raw.stdout.split('.')[0] }}"
+    bootstrap_token_secret: "{{ bootstrap_token_raw.stdout.split('.')[1] }}"
+    bootstrap_full_token:   "{{ bootstrap_token_raw.stdout }}"
+  run_once: true
+
+- name: Write bootstrap token Secret manifest
+  ansible.builtin.copy:
+    dest: "/tmp/bootstrap-token.yml"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: bootstrap-token-{{ bootstrap_token_id }}
+        namespace: kube-system
+      type: bootstrap.kubernetes.io/token
+      stringData:
+        token-id: "{{ bootstrap_token_id }}"
+        token-secret: "{{ bootstrap_token_secret }}"
+        expiration: "2037-03-10T03:22:11Z"
+        usage-bootstrap-authentication: "true"
+        usage-bootstrap-signing: "true"
+        auth-extra-groups: "system:bootstrappers:worker,system:bootstrappers:ingress"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+
+- name: Apply bootstrap token Secret
+  ansible.builtin.command:
+    cmd: "{{ bin_dir }}/kubectl apply -f /tmp/bootstrap-token.yml --kubeconfig {{ k8s_dir }}/admin.kubeconfig --validate=false"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  changed_when: true
+
+- name: Copy RBAC manifests to first master
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/tmp/{{ item | basename }}"
+    mode: "0644"
+  loop:
+    - create-csrs-for-bootstrapping.yml
+    - auto-approve-csrs.yml
+    - auto-approve-renewals.yml
+  run_once: true
+  delegate_to: "{{ first_master }}"
+
+- name: Apply bootstrap RBAC manifests
+  ansible.builtin.command:
+    cmd: "{{ bin_dir }}/kubectl apply -f /tmp/{{ item | basename }} --kubeconfig {{ k8s_dir }}/admin.kubeconfig --validate=false"
+  loop:
+    - create-csrs-for-bootstrapping.yml
+    - auto-approve-csrs.yml
+    - auto-approve-renewals.yml
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  changed_when: true
+
+- name: Create kube-apiserver-to-kubelet ClusterRoleBinding
+  ansible.builtin.command:
+    cmd: >
+      {{ bin_dir }}/kubectl create clusterrolebinding kube-apiserver-to-kubelet
+      --clusterrole=system:kubelet-api-admin
+      --user=kube-apiserver
+      --kubeconfig {{ k8s_dir }}/admin.kubeconfig
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  register: crb_result
+  changed_when: "'created' in crb_result.stdout"
+  failed_when: crb_result.rc != 0 and 'already exists' not in crb_result.stderr
+
+# Save bootstrap token to pki_dir so the kubelet role can use it
+- name: Save bootstrap token to local pki dir
+  ansible.builtin.copy:
+    content: "{{ bootstrap_full_token }}"
+    dest: "{{ pki_dir }}/bootstrap-token.txt"
+    mode: "0600"
+  run_once: true
+  delegate_to: localhost
