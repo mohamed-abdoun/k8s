@@ -1,0 +1,168 @@
+---
+# kubelet/tasks/main.yml
+# Runs on: workers
+
+# ── Swap ─────────────────────────────────────────────────────────────────────
+- name: Disable swap immediately
+  ansible.builtin.command:
+    cmd: swapoff -a
+  become: true
+  changed_when: false
+
+- name: Disable swap in /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '# \1'
+  become: true
+
+# ── Worker node directories ───────────────────────────────────────────────────
+- name: Create worker directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ cni_dir }}"
+    - "{{ cni_bin_dir }}"
+    - "{{ k8s_dir }}"
+    - /etc/containerd
+  become: true
+
+# ── containerd ────────────────────────────────────────────────────────────────
+- name: Download containerd archive
+  ansible.builtin.get_url:
+    url: "https://github.com/containerd/containerd/releases/download/{{ containerd_version }}/containerd-{{ containerd_version | regex_replace('^v', '') }}-linux-{{ goarch }}.tar.gz"
+    dest: "/tmp/containerd-{{ containerd_version | regex_replace('^v', '') }}-linux-{{ goarch }}.tar.gz"
+    mode: "0644"
+
+- name: Extract containerd binaries
+  ansible.builtin.unarchive:
+    src: "/tmp/containerd-{{ containerd_version | regex_replace('^v', '') }}-linux-{{ goarch }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: /tmp/bin/containerd
+
+- name: Install containerd binaries
+  ansible.builtin.copy:
+    src: "/tmp/bin/{{ item }}"
+    dest: "{{ bin_dir }}/{{ item }}"
+    mode: "0755"
+    remote_src: true
+  loop:
+    - containerd
+    - containerd-shim-runc-v2
+    - ctr
+  become: true
+
+# ── runc ──────────────────────────────────────────────────────────────────────
+- name: Download runc
+  ansible.builtin.get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/v{{ runc_version | default('1.4.0') }}/runc.{{ runc_arch }}"
+    dest: "{{ sbin_dir }}/runc"
+    mode: "0755"
+  become: true
+
+# ── CNI plugins ───────────────────────────────────────────────────────────────
+- name: Download CNI plugins archive
+  ansible.builtin.get_url:
+    url: "https://github.com/containernetworking/plugins/releases/download/{{ cni_plugins_version }}/cni-plugins-linux-{{ goarch }}-{{ cni_plugins_version }}.tgz"
+    dest: "/tmp/cni-plugins-linux-{{ goarch }}-{{ cni_plugins_version }}.tgz"
+    mode: "0644"
+
+- name: Extract CNI plugins
+  ansible.builtin.unarchive:
+    src: "/tmp/cni-plugins-linux-{{ goarch }}-{{ cni_plugins_version }}.tgz"
+    dest: "{{ cni_bin_dir }}"
+    remote_src: true
+  become: true
+
+# ── kubelet ───────────────────────────────────────────────────────────────────
+- name: Download kubelet binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ goarch }}/kubelet"
+    dest: "{{ bin_dir }}/kubelet"
+    mode: "0755"
+  become: true
+
+# ── containerd config ─────────────────────────────────────────────────────────
+- name: Deploy containerd config.toml
+  ansible.builtin.template:
+    src: containerd-config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+  become: true
+  notify: Restart containerd
+
+- name: Deploy containerd systemd service
+  ansible.builtin.template:
+    src: containerd.service.j2
+    dest: "{{ systemd_dir }}/containerd.service"
+    mode: "0644"
+  become: true
+  notify: Restart containerd
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+
+# ── kubelet config ────────────────────────────────────────────────────────────
+- name: Deploy kubelet config.yaml
+  ansible.builtin.template:
+    src: kubelet-config.yaml.j2
+    dest: "{{ k8s_dir }}/config.yaml"
+    mode: "0644"
+  become: true
+
+# ── bootstrap-kubeconfig (uses token saved by controller-manager role) ─────────
+- name: Read bootstrap token from pki dir
+  ansible.builtin.slurp:
+    src: "{{ pki_dir }}/bootstrap-token.txt"
+  register: btk_raw
+  delegate_to: localhost
+  run_once: false
+
+- name: Deploy bootstrap-kubeconfig
+  ansible.builtin.copy:
+    dest: "{{ k8s_dir }}/bootstrap-kubeconfig"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - cluster:
+          certificate-authority: {{ k8s_dir }}/ca.crt
+          server: https://{{ lb_ip }}:6443
+        name: bootstrap
+      contexts:
+      - context:
+          cluster: bootstrap
+          user: kubelet-bootstrap
+        name: bootstrap
+      current-context: bootstrap
+      preferences: {}
+      users:
+      - name: kubelet-bootstrap
+        user:
+          token: {{ btk_raw.content | b64decode | trim }}
+  become: true
+
+- name: Deploy kubelet systemd service
+  ansible.builtin.template:
+    src: kubelet.service.j2
+    dest: "{{ systemd_dir }}/kubelet.service"
+    mode: "0644"
+  become: true
+  notify: Restart kubelet
+
+- name: Enable and start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true

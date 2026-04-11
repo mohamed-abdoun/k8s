@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Kubernetes the Hard Way – cluster configuration
+# This file is the single source of truth for all provisioning (Vagrant/Terraform)
+# and configuration (Ansible).
+# ─────────────────────────────────────────────────────────────────────────────
+
+cluster:
+  name: k8s-kthw
+  kubernetes_version: v1.34.2
+  etcd_version: v3.6.7
+  containerd_version: v2.2.1
+  cni_plugins_version: v1.9.0
+  cilium_version: "1.18.5"
+
+# ── Provider ─────────────────────────────────────────────────────────────────
+# virtualbox  → VMs provisioned via Vagrant + VirtualBox
+# kvm         → VMs provisioned via Terraform + libvirt/KVM
+provider: kvm
+
+# ── Network ──────────────────────────────────────────────────────────────────
+network:
+  # All VMs sit on this /24.  Must be within your hypervisor's host-only range.
+  # VirtualBox default host-only: 192.168.56.0/24
+  # KVM NAT network: same range is used by Terraform
+  subnet: "192.168.56"          # first three octets – last octet is assigned below
+  lb_last_octet: 10             # → 192.168.56.10
+  masters_first_octet: 11       # master-1 → .11, master-2 → .12, …
+  workers_first_octet: 21       # worker-1 → .21, worker-2 → .22, …
+
+  pod_cidr: "10.96.0.0/12"
+  service_cidr: "10.96.0.0/12"
+  service_dns_ip: "10.96.0.10"
+  service_api_ip: "10.96.0.1"
+  cluster_name: "home-cluster"
+
+# ── Node sizing ───────────────────────────────────────────────────────────────
+nodes:
+  loadbalancer:
+    cpus: 1
+    memory: 512          # MB
+
+  masters:
+    count: 3             # ← change here to scale control-plane (odd number recommended for etcd quorum)
+    cpus: 1
+    memory: 2048
+
+  workers:
+    count: 3             # ← change here to scale data-plane
+    cpus: 1
+    memory: 2048
+
+# ── SSH ───────────────────────────────────────────────────────────────────────
+ssh:
+  user: ubuntu
+  private_key: "~/.ssh/id_rsa"
+  public_key: "~/.ssh/id_rsa.pub"
+
+# ── Architecture ──────────────────────────────────────────────────────────────
+# "auto"  → detected at runtime from `uname -m` (recommended)
+# "amd64" → force x86-64
+# "arm64" → force AArch64
+arch: arm64

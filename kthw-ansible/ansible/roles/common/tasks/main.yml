@@ -1,0 +1,128 @@
+---
+# common/tasks/main.yml
+# Applied to every node: packages, kernel settings, directories, /etc/hosts.
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - openssl
+      - tar
+      - wget
+      - curl
+      - vim
+      - socat
+      - conntrack
+      - ipset
+      - python3
+    state: present
+  become: true
+
+# ── /etc/hosts ───────────────────────────────────────────────────────────────
+- name: Build /etc/hosts entries
+  ansible.builtin.set_fact:
+    hosts_block: |
+      # k8s cluster nodes
+      {{ lb_ip }} lb
+      {% for ip in master_ips %}
+      {{ ip }} master-{{ loop.index }}
+      {% endfor %}
+      {% for ip in worker_ips %}
+      {{ ip }} worker-{{ loop.index }}
+      {% endfor %}
+
+- name: Inject cluster hosts into /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED – k8s nodes"
+    block: "{{ hosts_block }}"
+  become: true
+
+# ── Kernel modules ────────────────────────────────────────────────────────────
+- name: Load overlay and br_netfilter modules now
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+  become: true
+
+- name: Persist kernel modules across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+  become: true
+
+# ── Sysctl ────────────────────────────────────────────────────────────────────
+- name: Set required sysctl parameters
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-k8s.conf
+    reload: true
+  loop:
+    - { key: net.bridge.bridge-nf-call-iptables,  value: "1" }
+    - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+    - { key: net.ipv4.ip_forward,                 value: "1" }
+  become: true
+
+# ── Directories ───────────────────────────────────────────────────────────────
+- name: Create Kubernetes directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ k8s_dir }}"
+    - "{{ bin_dir }}"
+  become: true
+
+# ── Firewall: Ubuntu uses ufw (disabled by default on cloud images;
+#    we open ports explicitly in case it is enabled) ───────────────────────────
+- name: Allow required ports (masters)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "2379", proto: tcp }
+    - { port: "2380", proto: tcp }
+    - { port: "6443", proto: tcp }
+    - { port: "10250", proto: tcp }
+    - { port: "4244", proto: tcp }
+    - { port: "8472", proto: udp }
+    - { port: "53",   proto: tcp }
+    - { port: "53",   proto: udp }
+  when: inventory_hostname in groups['masters']
+  become: true
+  ignore_errors: true   # ufw may not be installed on minimal images
+
+- name: Allow required ports (workers)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+  loop:
+    - { port: "10250", proto: tcp }
+    - { port: "8472",  proto: udp }
+  when: inventory_hostname in groups['workers']
+  become: true
+  ignore_errors: true
+
+- name: Allow 6443 on lb
+  community.general.ufw:
+    rule: allow
+    port: "6443"
+    proto: tcp
+  when: inventory_hostname in groups['lb']
+  become: true
+  ignore_errors: true

@@ -1,0 +1,46 @@
+---
+# kube-apiserver/tasks/main.yml
+# Runs on: masters
+
+- name: Build etcd servers URL list
+  ansible.builtin.set_fact:
+    etcd_servers: "{{ master_ips | map('regex_replace', '^(.*)$', 'https://\\1:2379') | join(',') }}"
+
+- name: Download kube-apiserver binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ goarch }}/kube-apiserver"
+    dest: "{{ bin_dir }}/kube-apiserver"
+    mode: "0755"
+  become: true
+
+- name: Download kubectl binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/{{ kubernetes_version }}/bin/linux/{{ goarch }}/kubectl"
+    dest: "{{ bin_dir }}/kubectl"
+    mode: "0755"
+  become: true
+
+- name: Deploy kube-apiserver systemd service
+  ansible.builtin.template:
+    src: kube-apiserver.service.j2
+    dest: "{{ systemd_dir }}/kube-apiserver.service"
+    mode: "0644"
+  vars:
+    etcd_servers: "{{ etcd_servers }}"
+  become: true
+  notify: Reload and restart kube-apiserver
+
+- name: Enable and start kube-apiserver
+  ansible.builtin.systemd:
+    name: kube-apiserver
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+
+- name: Wait for kube-apiserver to be ready
+  ansible.builtin.wait_for:
+    host: "{{ node_ip }}"
+    port: 6443
+    delay: 5
+    timeout: 120

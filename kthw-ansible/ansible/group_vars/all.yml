@@ -1,0 +1,30 @@
+# group_vars/all.yml
+# These vars mirror cluster.yml so roles can reference them directly.
+# The inventory script already injects these as group vars; this file is kept
+# as a readable reference and fallback.
+
+# Pulled from config/cluster.yml via inventory.py (no need to duplicate values here).
+# Add any Ansible-specific overrides below.
+
+# Kubernetes directories
+k8s_dir:      /var/lib/kubernetes
+etcd_dir:     /etc/etcd
+cni_dir:      /etc/cni/net.d
+cni_bin_dir:  /opt/cni/bin
+bin_dir:      /usr/local/bin
+sbin_dir:     /usr/local/sbin
+systemd_dir:  /etc/systemd/system
+
+# PKI local output directory (on the Ansible control machine)
+# Overridden by inventory.py to an absolute path
+pki_dir:      "{{ playbook_dir }}/../pki"
+
+# Cert validity (days)
+cert_days: 3650
+cert_days_leaf: 1000
+
+# ── Architecture ──────────────────────────────────────────────────────────────
+# Derived from the gathered fact ansible_architecture (aarch64 → arm64, x86_64 → amd64).
+# Used in every binary download URL.  Requires gather_facts: smart (or true).
+goarch: "{{ 'arm64' if (ansible_architecture | default('x86_64')) == 'aarch64' else 'amd64' }}"
+runc_arch: "{{ goarch }}"   # runc uses the same identifiers (amd64 / arm64)

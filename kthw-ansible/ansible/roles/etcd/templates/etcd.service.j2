@@ -1,0 +1,28 @@
+[Unit]
+Description=etcd
+Documentation=https://github.com/etcd-io/etcd
+
+[Service]
+ExecStart=/usr/bin/etcd \
+  --name={{ node_name }} \
+  --cert-file={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.crt \
+  --key-file={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.key \
+  --peer-cert-file={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.crt \
+  --peer-key-file={{ etcd_dir }}/etcd-server{{ node_index + 1 }}.key \
+  --trusted-ca-file={{ etcd_dir }}/etcd-ca.crt \
+  --peer-trusted-ca-file={{ etcd_dir }}/etcd-ca.crt \
+  --peer-client-cert-auth \
+  --client-cert-auth \
+  --initial-advertise-peer-urls=https://{{ node_ip }}:2380 \
+  --listen-peer-urls=https://{{ node_ip }}:2380 \
+  --listen-client-urls=https://{{ node_ip }}:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls=https://{{ node_ip }}:2379 \
+  --initial-cluster-token=etcd-cluster-{{ cluster_name }} \
+  --initial-cluster={{ etcd_initial_cluster }} \
+  --initial-cluster-state=new \
+  --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

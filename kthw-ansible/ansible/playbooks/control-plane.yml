@@ -1,0 +1,25 @@
+---
+# control-plane.yml – (Re)deploy control plane components only
+# Assumes PKI files already exist in pki/ and have been distributed.
+# Usage: ansible-playbook playbooks/control-plane.yml
+
+- name: Set up etcd cluster
+  hosts: etcd
+  gather_facts: false
+  roles:
+    - etcd
+
+- name: Set up HAProxy load balancer
+  hosts: lb
+  gather_facts: false
+  roles:
+    - haproxy
+
+- name: Set up Kubernetes control plane
+  hosts: masters
+  gather_facts: false
+  serial: 1
+  roles:
+    - kube-apiserver
+    - kube-scheduler
+    - kube-controller-manager
