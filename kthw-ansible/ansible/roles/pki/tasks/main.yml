@@ -191,6 +191,39 @@
   delegate_to: localhost
   run_once: true
 
+# ── front-proxy client cert ───────────────────────────────────────────────────
+- name: Generate front-proxy-client key
+  ansible.builtin.command:
+    cmd: openssl genrsa -out "{{ pki_dir }}/front-proxy-client.key" 2048
+    creates: "{{ pki_dir }}/front-proxy-client.key"
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate front-proxy-client CSR
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new
+      -key "{{ pki_dir }}/front-proxy-client.key"
+      -subj "/CN=front-proxy-client"
+      -out "{{ pki_dir }}/front-proxy-client.csr"
+    creates: "{{ pki_dir }}/front-proxy-client.csr"
+  delegate_to: localhost
+  run_once: true
+
+- name: Sign front-proxy-client cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509 -req
+      -in "{{ pki_dir }}/front-proxy-client.csr"
+      -CA "{{ pki_dir }}/front-proxy-ca.crt"
+      -CAkey "{{ pki_dir }}/front-proxy-ca.key"
+      -CAcreateserial
+      -out "{{ pki_dir }}/front-proxy-client.crt"
+      -days {{ cert_days_leaf }}
+    creates: "{{ pki_dir }}/front-proxy-client.crt"
+  delegate_to: localhost
+  run_once: true
+
 # ── admin cert ────────────────────────────────────────────────────────────────
 - name: Generate admin key
   ansible.builtin.command:
@@ -453,6 +486,8 @@
     - kube-apiserver.key
     - front-proxy-ca.crt
     - front-proxy-ca.key
+    - front-proxy-client.crt
+    - front-proxy-client.key
     - service-account.crt
     - service-account.key
     - kube-scheduler.crt

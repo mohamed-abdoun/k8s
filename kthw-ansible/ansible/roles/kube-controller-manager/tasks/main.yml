@@ -89,6 +89,7 @@
     - create-csrs-for-bootstrapping.yml
     - auto-approve-csrs.yml
     - auto-approve-renewals.yml
+    - auto-approve-serving-csrs.yml
   run_once: true
   delegate_to: "{{ first_master }}"
 
@@ -99,6 +100,7 @@
     - create-csrs-for-bootstrapping.yml
     - auto-approve-csrs.yml
     - auto-approve-renewals.yml
+    - auto-approve-serving-csrs.yml
   run_once: true
   delegate_to: "{{ first_master }}"
   become: true
