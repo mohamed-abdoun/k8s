@@ -1,0 +1,24 @@
+---
+# addons/tasks/main.yml
+# Runs on: first master only.
+# Copies the install-addons.sh script and executes it.
+
+- name: Copy install-addons script to first master
+  ansible.builtin.copy:
+    src: install-addons.sh
+    dest: /tmp/install-addons.sh
+    mode: "0755"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+
+- name: Run install-addons script
+  ansible.builtin.command:
+    cmd: /tmp/install-addons.sh
+  environment:
+    KUBECONFIG: "{{ k8s_dir }}/admin.kubeconfig"
+    BIN_DIR: "{{ bin_dir }}"
+    PATH: "{{ bin_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  run_once: true
+  delegate_to: "{{ first_master }}"
+  become: true
+  changed_when: true

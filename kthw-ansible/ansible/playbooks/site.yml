@@ -58,3 +58,9 @@
   gather_facts: true
   roles:
     - coredns
+
+- name: Install addons (Nginx Ingress, Prometheus, Grafana)
+  hosts: masters[0]
+  gather_facts: true
+  roles:
+    - addons
