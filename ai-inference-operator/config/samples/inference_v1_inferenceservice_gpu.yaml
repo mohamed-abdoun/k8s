@@ -1,0 +1,30 @@
+apiVersion: inference.ai/v1
+kind: AIInferenceService
+metadata:
+  name: gpu-text-generator
+  namespace: default
+spec:
+  image: ghcr.io/huggingface/text-generation-inference:latest
+  replicas: 1
+  port: 80
+  model:
+    uri: meta-llama/Llama-2-7b-chat-hf
+  runtimeClassName: nvidia
+  accelerator:
+    resourceName: nvidia.com/gpu
+    count: 1
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 16Gi
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  ingress:
+    enabled: true
+    host: gpu-text-generator.127.0.0.1.nip.io
+    className: envoy-gateway

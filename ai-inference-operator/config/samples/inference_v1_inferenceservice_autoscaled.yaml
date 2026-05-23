@@ -1,0 +1,26 @@
+apiVersion: inference.ai/v1
+kind: AIInferenceService
+metadata:
+  name: autoscaled-echo
+  namespace: default
+spec:
+  image: hashicorp/http-echo:1.0
+  port: 5678
+  args:
+  - -listen=:5678
+  - -text=inference service ready
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  ingress:
+    enabled: true
+    host: autoscaled-echo.127.0.0.1.nip.io
+    className: envoy-gateway
