@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ai-inference-operator-leader-election-rolebinding
+  namespace: ai-inference-operator-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ai-inference-operator-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: ai-inference-operator-controller-manager
+  namespace: ai-inference-operator-system

@@ -1,0 +1,16 @@
+domain: inference.ai
+layout:
+- go.kubebuilder.io/v4
+projectName: ai-inference-operator
+repo: github.com/mohamed/ai-inference-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: inference.ai
+  group: inference
+  kind: AIInferenceService
+  path: github.com/mohamed/ai-inference-operator/api/v1
+  version: v1
+version: "3"

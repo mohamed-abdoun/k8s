@@ -1,0 +1,6 @@
+namespace: ai-inference-operator-system
+
+resources:
+- ../crd
+- ../rbac
+- ../manager

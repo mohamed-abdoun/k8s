@@ -1,0 +1,30 @@
+apiVersion: inference.ai/v1
+kind: AIInferenceService
+metadata:
+  name: text-generator
+  namespace: default
+spec:
+  image: ghcr.io/huggingface/text-generation-inference:latest
+  replicas: 1
+  port: 80
+  model:
+    uri: HuggingFaceH4/zephyr-7b-beta
+  env:
+  - name: HUGGING_FACE_HUB_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: hf-token
+        key: token
+        optional: true
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+  ingress:
+    enabled: true
+    host: text-generator.127.0.0.1.nip.io
+    path: /
+    className: envoy-gateway
